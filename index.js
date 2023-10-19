@@ -1,99 +1,203 @@
 const puppeteer = require('puppeteer');
 const cheerio = require('cheerio');
-const fs = require('fs');
+const { JsonDB, Config } = require('node-json-db');
+
+var db = new JsonDB(new Config('db', true, true, '/'));
+
 const readline = require('readline');
 const Mailjs = require('@cemalgnlts/mailjs');
-const mailjs = new Mailjs();
+
+var username = "avux";
+var browser, page, email, account = { user: '', pass: '' };
 
 const rl = readline.createInterface({
     input: process.stdin,
     output: process.stdout
 });
 
-async function createAndVerifyAccounts(choice, loopCount) {
-    for (let i = 0; i < loopCount || loopCount === Infinity; i++) {
-        console.log(`\n \n┏ [ Account ${i + 1} ]`);
-        await createAndVerifyAccount(choice);
-    }
+const NewEmail = async () => {
+    return new Promise(async (resolve, reject) => {
+        try {
+            do {
+                email = new Mailjs();
+                let account = await email.createOneAccount();
+                var { username, password } = account.data;
+            } while (username && password == 'undefined');
+
+            console.log(`Email Created : ${username}:${password}`);
+
+            account.user = username;
+            account.pass = password;
+
+            resolve();
+        } catch (error) {
+            reject(error);
+        }
+    });
+};
+
+const EventEmail = () => {
+    email.on("ready", () => console.log("Listening to incoming messages"));
+    email.on("arrive", async (msg) => {
+        console.log(`Message ${msg.id} has arrived`)
+        await ParseEmail(msg.id);
+    });
 }
 
-async function createAndVerifyAccount(choice) {
-    do {
-        var account = await mailjs.createOneAccount();
-        var { username, password } = account.data;
-    } while (username && password == undefined);
-    console.log('┣ Email    :', username);
-    console.log('┗ Password :', password);
+const ParseEmail = async (id) => {
+    const message = await email.getMessage(id);
+    const html = message.data.html[0];
+    const $ = cheerio.load(html);
+    const url = $('a[href*="confirm-email"]').attr('href');
 
-    const dataToSave = `${username}:${password}`;
-    const accounts = fs.createWriteStream('email_password.txt', { flags: 'a' });
-    accounts.write(dataToSave + '\n');
+    await VerifyAccount(url);
+}
 
-    const browser = await puppeteer.launch({
-        headless: false,
-        defaultViewport: null,
+const NewBrowser = async (headless) => {
+    browser = await puppeteer.launch({
+        headless: headless,
+        defaultViewport: { width: 1280, height: 720 },
     });
 
-    const page = await browser.newPage();
-    await page.setViewport({ width: 1920, height: 1080 });
-
-    console.log(' \n┏ [ Browser ]');
-    console.log('┣ Sign up Account');
-    await page.goto('https://animegenius.live3d.io/sign-up');
-    await page.waitForSelector('input[name="username"]');
-    await page.type('input[name="username"]', `avux_${username.split('@')[0]}`);
-    await page.type('input[name="email"]', username);
-    await page.type('input[name="password"]', password);
-    await page.type('input[name="password_confirmation"]', password);
-    await page.keyboard.press('Enter');
-
-    console.log('┣ Waiting Verification Email');
-    do {
-        var email = await mailjs.getMessages();
-    } while (email.data.length < 1);
-    let verification = await mailjs.getMessage(email.data[0].id);
-    const verificationHtml = verification.data.html[0];
-
-    console.log('┣ Verifying');
-    const $ = cheerio.load(verificationHtml);
-    const verificationLink = $('a[href*="confirm-email"]').attr('href');
-    await page.goto(verificationLink);
-
-    await page.waitForSelector('a[href*="sign-in"]');
-    console.log('┗ Successfully Registered');
-    await page.click('a[href*="sign-in"]');
-
-    console.log(' \n┏ [ Browser ]');
-    console.log('┣ Sign in Account');
-    await page.waitForSelector('input[name="email"]');
-    await page.type('input[name="email"]', username);
-    await page.type('input[name="password"]', password);
-    await page.keyboard.press('Enter');
-    console.log('┗ Successfully Login');
-    
-    if (choice == 1) {
-        await browser.close();
-    } else {
-        await page.waitForSelector('button[type="button"]');
-        await page.goto('https://animegenius.live3d.io/ai-art-tools');
-        console.log(' \n┏ [ Enjoy Your Account ]');
-    }
-    console.log('┗ Script By Avux');
+    [page] = await browser.pages();
 }
 
-rl.question('Select an option:\n1. Generate and Verify Account\n2. Generate Account and Open Dashboard\nEnter your choice (1/2) : ', (choice) => {
-    if (choice === '1') {
-        rl.question('How many accounts (0 for unlimited loop): ', (loop) => {
-            if (loop == 0) {
-                createAndVerifyAccounts(choice, Infinity).then(() => rl.close());
-            } else {
-                createAndVerifyAccounts(choice, parseInt(loop)).then(() => rl.close());
+const VerifyAccount = async (url) => {
+    await page.goto(url);
+    console.log("Account Verified");
+
+    let oldData = await db.getData('/account');
+    let updatedData = [...oldData, { email: account.user, pass: account.pass }];
+    await db.push('/account', updatedData);
+}
+
+const RegisterAccount = async ({ user, pass }) => {
+    await page.goto('https://animegenius.live3d.io/sign-up');
+    await page.waitForSelector('input[name="username"]');
+
+    await page.type('input[name="username"]', `${username}_${user.split('@')[0]}`);
+    await page.type('input[name="email"]', user);
+    await page.type('input[name="password"]', pass);
+    await page.type('input[name="password_confirmation"]', pass);
+    await page.keyboard.press('Enter');
+
+    EventEmail();
+
+    await new Promise((resolve) => {
+        const intervalId = setInterval(() => {
+            if (page.url().includes('confirm-email')) {
+                clearInterval(intervalId);
+                resolve();
             }
-        });
-    } else if (choice === '2') {
-        createAndVerifyAccounts(choice, 1).then(() => rl.close());
-    } else {
-        console.log('Invalid choice. Please enter 1 or 2.');
-        rl.close();
+        }, 5000);
+    });
+};
+
+const LoginAccount = async ({ user, pass }) => {
+    await page.goto('https://animegenius.live3d.io/sign-in');
+    await page.waitForSelector('input[name="email"]');
+
+    await page.type('input[name="email"]', user);
+    await page.type('input[name="password"]', pass);
+    await page.keyboard.press('Enter');
+
+    await page.waitForSelector('button[type="button"]');
+    await page.goto('https://animegenius.live3d.io/ai-art-tools');
+
+    console.log('Successfully Login');
+}
+
+function showMenu() {
+    console.log('┏━ Menu');
+    console.log('1. Generate Multiple Accounts');
+    console.log('2. Generate & Use Account');
+    console.log('3. Use Account From Database');
+    console.log('4. Exit');
+}
+
+async function handleOption(option) {
+    console.log('[+] Selected option -', option);
+    switch (option) {
+        case 1:
+            const loop = await askQuestion('┏━ Amount of account\n┃ Number - ? | 0 - Unlimited\n┗━➢  ');
+            await processOption1(loop);
+            break;
+        case 2:
+            await processOption2();
+            break;
+        case 3:
+            await processOption3();
+            break;
+        case 4:
+            console.log('Exiting...');
+            break;
+        default:
+            console.log('[!] Invalid option. Please select a valid option.');
     }
-});
+}
+
+function askQuestion(question) {
+    return new Promise((resolve) => {
+        rl.question(question, (input) => {
+            resolve(parseInt(input));
+        });
+    });
+}
+
+async function processOption1(loop) {
+    if (loop === 0) {
+        let i = 1;
+        while (true) {
+            console.log(`[+] Looping - ${i} Account`);
+            await processOption1Step();
+            console.log(' ');
+            i++;
+        }
+    } else {
+        for (let i = 0; i < loop; i++) {
+            console.log(`[+] Remaining - ${(loop - i)} Account`);
+            await processOption1Step();
+        }
+    }
+}
+
+async function processOption1Step() {
+    await NewEmail();
+    await NewBrowser("new");
+    await RegisterAccount(account);
+    await browser.close();
+}
+
+async function processOption2() {
+    await NewEmail();
+    await NewBrowser("new");
+    await RegisterAccount(account);
+    await browser.close();
+    await NewBrowser(false);
+    await LoginAccount(account);
+}
+
+async function processOption3() {
+    let data = await db.getData('/account');
+    let acc = data[Math.floor(Math.random() * data.length)];
+    account.user = acc.email;
+    account.pass = acc.pass;
+    await NewBrowser(false);
+    await LoginAccount(account);
+}
+
+async function startProgram() {
+
+    let option;
+    do {
+        showMenu();
+        option = await askQuestion('┗━➢  ');
+        console.clear();
+        await handleOption(option);
+    } while (option !== 4)
+
+    console.log('==== ended ====');
+    rl.close();
+}
+
+startProgram();
