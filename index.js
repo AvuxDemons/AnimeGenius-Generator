@@ -107,6 +107,29 @@ const LoginAccount = async ({ user, pass }) => {
     console.log('Successfully Login');
 }
 
+const checkBalance = async () => {
+
+    await new Promise((resolve) => {
+        const intervalId = setInterval(() => {
+            if (page.url().includes('ai-art-tools')) {
+                clearInterval(intervalId);
+                resolve();
+            }
+        }, 1000);
+    });
+
+    const html = await page.content();
+    const $ = cheerio.load(html);
+
+    let balance = $('#app').find('.app-header').find('.app-container').find('#kt_app_header_wrapper').find('.app-navbar').find('.app-navbar-item:nth-child(1)').find('a').find('span').text().trim();
+
+    if (balance < 50) {
+        return true;
+    } else {
+        return false;
+    }
+}
+
 function showMenu() {
     console.log('┏━ Menu');
     console.log('1. Generate Multiple Accounts');
@@ -147,7 +170,7 @@ function askQuestion(question) {
 async function processOption1(loop) {
     if (loop === 0) {
         let i = 1;
-        while (true) {
+        while (true) {  
             console.log(`[+] Looping - ${i} Account`);
             await processOption1Step();
             console.log(' ');
@@ -182,8 +205,12 @@ async function processOption3() {
     let acc = data[Math.floor(Math.random() * data.length)];
     account.user = acc.email;
     account.pass = acc.pass;
-    await NewBrowser(false);
-    await LoginAccount(account);
+    do {
+        await NewBrowser(false);
+        await LoginAccount(account);
+        var lowBalance = await checkBalance();
+        lowBalance ? await browser.close() : '';
+    } while (lowBalance);
 }
 
 async function startProgram() {
